@@ -1,0 +1,18 @@
+services:
+  parkeerhulp:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - EGIS_API_BASE_URL=https://api.parkeervergunningen.egisparkingservices.nl/api
+      - EGIS_USERNAME=${EGIS_USERNAME}
+      - EGIS_PASSWORD=${EGIS_PASSWORD}
+      - APP_PIN=${APP_PIN}
+      - COOKIE_SECRET=${COOKIE_SECRET}
+      - DATABASE_PATH=/app/data/parkeerhulp.db
+    volumes:
+      - parkeerhulp-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  parkeerhulp-data:
