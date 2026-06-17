@@ -10,12 +10,19 @@ import ActiveSession from "@/components/active-session";
 import type { FavoritePlate, TimeShortcut } from "@/lib/types";
 
 interface ActiveSessionData {
-  id: number;
+  parking_session_id: number;
   vrn: string;
   started_at: string;
   ended_at: string;
   status: string;
-  cost?: number;
+  cost: number;
+  zone_description: string;
+  can_edit: boolean;
+}
+
+interface ZoneData {
+  zone_id: number;
+  zone_description: string;
 }
 
 export default function HomePage() {
@@ -23,14 +30,19 @@ export default function HomePage() {
   const [plates, setPlates] = useState<FavoritePlate[]>([]);
   const [shortcuts, setShortcuts] = useState<TimeShortcut[]>([]);
   const [selectedPlate, setSelectedPlate] = useState<string | null>(null);
-  const [selectedShortcutId, setSelectedShortcutId] = useState<number | null>(null);
+  const [selectedShortcutId, setSelectedShortcutId] = useState<number | null>(
+    null
+  );
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
   const [loading, setLoading] = useState(false);
   const [activeSessions, setActiveSessions] = useState<ActiveSessionData[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [permitId, setPermitId] = useState<number | null>(null);
+  const [clientProductId, setClientProductId] = useState<number | null>(null);
+  const [zones, setZones] = useState<ZoneData[]>([]);
+  const [selectedZoneId, setSelectedZoneId] = useState<number | null>(null);
+  const [initialLoading, setInitialLoading] = useState(true);
 
   // Load initial data
   useEffect(() => {
@@ -38,51 +50,46 @@ export default function HomePage() {
       fetch("/api/plates").then((r) => r.json()),
       fetch("/api/shortcuts").then((r) => r.json()),
       fetch("/api/permits").then((r) => r.json()),
-    ]).then(([platesRes, shortcutsRes, permitsRes]) => {
-      if (platesRes.success) setPlates(platesRes.data);
-      if (shortcutsRes.success) setShortcuts(shortcutsRes.data);
-      if (permitsRes.success && permitsRes.data?.permit) {
-        // Find the first active visitor permit
-        const permits = permitsRes.data.permit;
-        if (permits.length > 0) {
-          // Use client_product_id from the first permit
-          const firstPermit = permits[0];
-          setPermitId(
-            firstPermit.client_product_id || firstPermit.id
-          );
+    ])
+      .then(([platesRes, shortcutsRes, permitsRes]) => {
+        if (platesRes.success) setPlates(platesRes.data);
+        if (shortcutsRes.success) setShortcuts(shortcutsRes.data);
+        if (permitsRes.success && permitsRes.data) {
+          setClientProductId(permitsRes.data.client_product_id);
+          if (permitsRes.data.zones) {
+            setZones(permitsRes.data.zones);
+            // Auto-select first zone
+            if (permitsRes.data.zones.length > 0) {
+              setSelectedZoneId(permitsRes.data.zones[0].zone_id);
+            }
+          }
         }
-      }
-    });
+      })
+      .finally(() => setInitialLoading(false));
   }, []);
 
   // Poll active sessions
   const fetchSessions = useCallback(async () => {
     try {
-      const params = permitId ? `?product_id=${permitId}` : "";
-      const res = await fetch(`/api/sessions${params}`);
+      const res = await fetch("/api/sessions?page=1&row_per_page=10");
       const data = await res.json();
       if (data.success && data.data?.data) {
-        // Filter for active sessions (status check)
         const active = data.data.data.filter(
           (s: ActiveSessionData) =>
-            s.status === "ACTIVE" ||
-            s.status === "STARTED" ||
-            new Date(s.ended_at).getTime() > Date.now()
+            s.status === "ACTIVE" || s.status === "STARTED"
         );
         setActiveSessions(active);
       }
     } catch {
       // Silent fail for polling
     }
-  }, [permitId]);
+  }, []);
 
   useEffect(() => {
-    if (permitId) {
-      fetchSessions();
-      const interval = setInterval(fetchSessions, 30_000);
-      return () => clearInterval(interval);
-    }
-  }, [permitId, fetchSessions]);
+    fetchSessions();
+    const interval = setInterval(fetchSessions, 30_000);
+    return () => clearInterval(interval);
+  }, [fetchSessions]);
 
   // Handle shortcut selection
   const handleShortcutSelect = (shortcut: TimeShortcut) => {
@@ -92,12 +99,21 @@ export default function HomePage() {
     setError(null);
   };
 
-  // Build ISO datetime from time string (HH:MM) for today
+  // Build ISO datetime from time string (HH:MM) for today in Europe/Amsterdam
   const timeToIso = (time: string): string => {
-    const today = new Date();
+    const now = new Date();
     const [hours, minutes] = time.split(":").map(Number);
-    today.setHours(hours, minutes, 0, 0);
-    return today.toISOString();
+    // Build date string in local time with explicit timezone
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    const h = String(hours).padStart(2, "0");
+    const m = String(minutes).padStart(2, "0");
+    // Use +02:00 for CEST (Amsterdam summer time) or +01:00 for CET
+    // Simple heuristic: if month is between April and October, use CEST
+    const isSummer = now.getMonth() >= 2 && now.getMonth() <= 9;
+    const tz = isSummer ? "+02:00" : "+01:00";
+    return `${year}-${month}-${day}T${h}:${m}:00${tz}`;
   };
 
   // Start parking
@@ -107,8 +123,13 @@ export default function HomePage() {
       return;
     }
 
-    if (!permitId) {
+    if (!clientProductId) {
       setError("Geen vergunning gevonden. Controleer je account.");
+      return;
+    }
+
+    if (!selectedZoneId) {
+      setError("Geen zone geselecteerd");
       return;
     }
 
@@ -121,10 +142,11 @@ export default function HomePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          client_product_id: permitId,
+          client_product_id: clientProductId,
           plate: selectedPlate,
           start_time: timeToIso(startTime),
           end_time: timeToIso(endTime),
+          zone_id: selectedZoneId,
         }),
       });
 
@@ -138,7 +160,6 @@ export default function HomePage() {
         setEndTime("");
         fetchSessions();
 
-        // Clear success after 5s
         setTimeout(() => setSuccess(null), 5000);
       } else {
         setError(data.error || "Kon parkeren niet starten");
@@ -171,7 +192,16 @@ export default function HomePage() {
     }
   };
 
-  const canStart = selectedPlate && startTime && endTime && !loading;
+  const canStart =
+    selectedPlate && startTime && endTime && selectedZoneId && !loading;
+
+  if (initialLoading) {
+    return (
+      <div className="min-h-screen bg-gray-950 text-white flex items-center justify-center">
+        <div className="text-gray-400">Laden...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -208,8 +238,15 @@ export default function HomePage() {
             </h2>
             {activeSessions.map((session) => (
               <ActiveSession
-                key={session.id}
-                session={session}
+                key={session.parking_session_id}
+                session={{
+                  id: session.parking_session_id,
+                  vrn: session.vrn,
+                  started_at: session.started_at,
+                  ended_at: session.ended_at,
+                  status: session.status,
+                  cost: session.cost,
+                }}
                 onStop={handleStop}
               />
             ))}
@@ -247,7 +284,7 @@ export default function HomePage() {
         </div>
 
         {/* Manual Time Picker */}
-        <div className="mb-6">
+        <div className="mb-4">
           <TimePicker
             startTime={startTime}
             endTime={endTime}
@@ -262,6 +299,27 @@ export default function HomePage() {
           />
         </div>
 
+        {/* Zone Selection */}
+        {zones.length > 1 && (
+          <div className="mb-6">
+            <label className="block text-sm font-medium text-gray-400 mb-2">
+              Zone
+            </label>
+            <select
+              value={selectedZoneId || ""}
+              onChange={(e) => setSelectedZoneId(Number(e.target.value))}
+              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-xl text-white text-sm
+                focus:outline-none focus:border-blue-500"
+            >
+              {zones.map((zone) => (
+                <option key={zone.zone_id} value={zone.zone_id}>
+                  {zone.zone_description}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
         {/* Start Button */}
         <ParkingButton
           disabled={!canStart}
@@ -270,9 +328,9 @@ export default function HomePage() {
         />
 
         {/* Permit info */}
-        {!permitId && (
-          <p className="text-center text-gray-600 text-xs mt-4">
-            Vergunning wordt geladen...
+        {!clientProductId && !initialLoading && (
+          <p className="text-center text-red-400 text-xs mt-4">
+            Geen vergunning gevonden. Check je Egis credentials.
           </p>
         )}
       </div>

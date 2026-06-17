@@ -30,45 +30,42 @@ export async function POST(request: Request) {
     const body = await request.json();
     const { client_product_id, plate, start_time, end_time, zone_id } = body;
 
-    if (!client_product_id || !plate || !start_time || !end_time) {
+    if (!client_product_id || !plate || !start_time || !end_time || !zone_id) {
       return NextResponse.json(
         {
           success: false,
-          error: "client_product_id, plate, start_time, en end_time zijn verplicht",
+          error:
+            "client_product_id, plate, start_time, end_time, en zone_id zijn verplicht",
         },
         { status: 400 }
       );
     }
 
-    // Resolve "now" to current time
-    const resolvedStart =
-      start_time === "now" ? new Date().toISOString() : start_time;
+    // Clean plate: remove dashes and spaces, uppercase
+    const cleanPlate = plate.toUpperCase().replace(/[-\s]/g, "");
 
-    // Step 1: Start the session
-    const startResult = await egis.startParkingSession({
+    // Start the session
+    const result = await egis.startParkingSession({
       client_product_id,
-      vrn: plate.toUpperCase().replace(/[^A-Z0-9]/g, ""),
-      started_at: resolvedStart,
+      vrn: cleanPlate,
+      started_at: start_time,
       ended_at: end_time,
-      paid_parking_zone_id: zone_id || undefined,
+      zone_id,
     });
 
-    // Step 2: Activate the session
-    const activateResult = await egis.activateParkingSession(startResult);
-
-    // Step 3: Log locally
+    // Log locally
     await logSession({
-      plate: plate.toUpperCase(),
-      start_time: resolvedStart,
+      plate: cleanPlate,
+      start_time,
       end_time,
-      zone: zone_id ? String(zone_id) : null,
+      zone: String(zone_id),
       cost: null,
-      egis_id: null,
+      egis_id: String(result.parking_session_id),
     });
 
     return NextResponse.json({
       success: true,
-      data: { start: startResult, activate: activateResult },
+      data: result,
     });
   } catch (error) {
     console.error("Start session error:", error);

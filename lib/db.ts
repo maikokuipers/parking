@@ -1,5 +1,5 @@
 import { createClient, type Client } from "@libsql/client";
-import type { TimeShortcut, FavoritePlate, SessionLog } from "./types";
+import type { TimeShortcut, SessionLog } from "./types";
 
 let client: Client | null = null;
 
@@ -26,12 +26,9 @@ export async function initDb(): Promise<void> {
       created_at TEXT DEFAULT (datetime('now'))
     );
 
-    CREATE TABLE IF NOT EXISTS favorite_plates (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      plate       TEXT NOT NULL UNIQUE,
-      description TEXT,
-      sort_order  INTEGER NOT NULL DEFAULT 0,
-      created_at  TEXT DEFAULT (datetime('now'))
+    CREATE TABLE IF NOT EXISTS plate_order (
+      vrn        TEXT PRIMARY KEY,
+      sort_order INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS config (
@@ -142,38 +139,33 @@ export async function deleteShortcut(id: number): Promise<boolean> {
 }
 
 // ============================================
-// Favorite Plates CRUD
+// Plate Ordering
 // ============================================
 
-export async function getFavoritePlates(): Promise<FavoritePlate[]> {
+export async function getPlateOrder(): Promise<Map<string, number>> {
   await initDb();
   const db = getClient();
-  const result = await db.execute(
-    "SELECT * FROM favorite_plates ORDER BY sort_order ASC"
-  );
-  return result.rows as unknown as FavoritePlate[];
+  const result = await db.execute("SELECT vrn, sort_order FROM plate_order");
+  const map = new Map<string, number>();
+  for (const row of result.rows) {
+    map.set(row.vrn as string, row.sort_order as number);
+  }
+  return map;
 }
 
-export async function createFavoritePlate(
-  plate: Omit<FavoritePlate, "id" | "created_at">
-): Promise<FavoritePlate> {
+export async function savePlateOrder(
+  order: Array<{ vrn: string; sort_order: number }>
+): Promise<void> {
   await initDb();
   const db = getClient();
-  const result = await db.execute({
-    sql: "INSERT INTO favorite_plates (plate, description, sort_order) VALUES (?, ?, ?) RETURNING *",
-    args: [plate.plate, plate.description || null, plate.sort_order],
-  });
-  return result.rows[0] as unknown as FavoritePlate;
-}
-
-export async function deleteFavoritePlate(id: number): Promise<boolean> {
-  await initDb();
-  const db = getClient();
-  const result = await db.execute({
-    sql: "DELETE FROM favorite_plates WHERE id = ?",
-    args: [id],
-  });
-  return result.rowsAffected > 0;
+  // Replace all ordering in a single transaction
+  await db.execute("DELETE FROM plate_order");
+  for (const item of order) {
+    await db.execute({
+      sql: "INSERT INTO plate_order (vrn, sort_order) VALUES (?, ?)",
+      args: [item.vrn, item.sort_order],
+    });
+  }
 }
 
 // ============================================

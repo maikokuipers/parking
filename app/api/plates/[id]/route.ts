@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { deleteFavoritePlate } from "@/lib/db";
+import * as egis from "@/lib/egis-client";
 
 export async function DELETE(
   _request: NextRequest,
@@ -8,15 +8,7 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const deleted = await deleteFavoritePlate(parseInt(id));
-
-    if (!deleted) {
-      return NextResponse.json(
-        { success: false, error: "Kenteken niet gevonden" },
-        { status: 404 }
-      );
-    }
-
+    await egis.deleteFavoriteVrn(parseInt(id));
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Delete plate error:", error);

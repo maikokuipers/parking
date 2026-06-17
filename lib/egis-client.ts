@@ -1,9 +1,12 @@
 /**
  * Server-side Egis Parking API client.
  * All methods use the token manager for authentication.
+ *
+ * The SSP login token only has access to /v1/ssp/* endpoints.
+ * Front-office endpoints like /v1/account or /v1/permit/list require DigiD auth.
  */
 
-import { getToken } from "./token-manager";
+import { getToken, clearToken } from "./token-manager";
 
 const BASE_URL =
   process.env.EGIS_API_BASE_URL ||
@@ -12,7 +15,8 @@ const V1_URL = `${BASE_URL}/v1`;
 
 async function egisRequest<T>(
   url: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  retry = true
 ): Promise<T> {
   const token = await getToken();
   const response = await fetch(url, {
@@ -24,6 +28,12 @@ async function egisRequest<T>(
     },
   });
 
+  if (response.status === 401 && retry) {
+    // Token may be expired, clear and retry once
+    clearToken();
+    return egisRequest(url, options, false);
+  }
+
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`Egis API error (${response.status}): ${text}`);
@@ -33,20 +43,19 @@ async function egisRequest<T>(
 }
 
 // ============================================
-// Permits
-// ============================================
-
-export async function getPermits(): Promise<{ permit: unknown[] }> {
-  return egisRequest(`${V1_URL}/permit/list_for_client`);
-}
-
-// ============================================
 // Parking Zones
 // ============================================
 
 export async function getParkingZones(
   clientProductId: number
-): Promise<{ count: number; paid_parking_zones: unknown[] }> {
+): Promise<{
+  count: number;
+  paid_parking_zones: Array<{
+    zone_id: number;
+    zone_description: string;
+    time_frame_data: Array<Array<{ startTime: string; endTime: string }>>;
+  }>;
+}> {
   return egisRequest(
     `${V1_URL}/ssp/paid_parking_zone/list/client_product/${clientProductId}`
   );
@@ -61,16 +70,9 @@ export async function startParkingSession(data: {
   vrn: string;
   started_at: string;
   ended_at: string;
-  paid_parking_zone_id?: number;
-}): Promise<unknown> {
+  zone_id: number;
+}): Promise<{ parking_session_id: number }> {
   return egisRequest(`${V1_URL}/ssp/parking_session/start`, {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
-}
-
-export async function activateParkingSession(data: unknown): Promise<unknown> {
-  return egisRequest(`${V1_URL}/ssp/parking_session/activate`, {
     method: "POST",
     body: JSON.stringify(data),
   });
@@ -81,8 +83,14 @@ export async function calculateCost(data: {
   vrn: string;
   started_at: string;
   ended_at: string;
-  paid_parking_zone_id?: number;
-}): Promise<unknown> {
+  paid_parking_zone_id: number;
+}): Promise<{
+  parking_session_balance: {
+    calculated_cost: number;
+    duration: number;
+    calculated_time: number;
+  };
+}> {
   return egisRequest(`${V1_URL}/ssp/parking_session/cost_calculator`, {
     method: "POST",
     body: JSON.stringify(data),
@@ -92,7 +100,7 @@ export async function calculateCost(data: {
 export async function editParkingSession(
   sessionId: number,
   data: { new_ended_at: string }
-): Promise<unknown> {
+): Promise<{ id: number; ended_at: string; status: string }> {
   return egisRequest(`${V1_URL}/ssp/parking_session/${sessionId}/edit`, {
     method: "PATCH",
     body: JSON.stringify(data),
@@ -105,7 +113,24 @@ export async function listParkingSessions(params: {
   product_id?: number;
   sort?: string;
   filters?: string;
-}): Promise<{ count: number; data: unknown[] }> {
+}): Promise<{
+  count: number;
+  page: number;
+  row_per_page: number;
+  data: Array<{
+    parking_session_id: number;
+    client_product_id: number;
+    vrn: string;
+    started_at: string;
+    ended_at: string;
+    status: string;
+    cost: number;
+    zone_description: string;
+    permit_name: string;
+    machine_number: number;
+    can_edit: boolean;
+  }>;
+}> {
   const searchParams = new URLSearchParams();
   if (params.page) searchParams.set("page", String(params.page));
   if (params.row_per_page)
@@ -121,20 +146,19 @@ export async function listParkingSessions(params: {
   );
 }
 
-export async function confirmVisitorSession(
-  data: unknown
-): Promise<unknown> {
-  return egisRequest(`${V1_URL}/ssp/visitor/parking_session/confirmation`, {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
-}
-
 // ============================================
-// Favorite License Plates
+// Favorite License Plates (Egis-side)
 // ============================================
 
-export async function getFavoriteVrns(): Promise<unknown> {
+export async function getFavoriteVrns(): Promise<{
+  count: number;
+  favorite_vrns: Array<{
+    id: number;
+    vrn: string;
+    description: string;
+    created_at: string;
+  }>;
+}> {
   return egisRequest(`${V1_URL}/ssp/favorite_vrn/list`);
 }
 
@@ -152,12 +176,4 @@ export async function deleteFavoriteVrn(id: number): Promise<unknown> {
   return egisRequest(`${V1_URL}/ssp/favorite_vrn/${id}/delete`, {
     method: "DELETE",
   });
-}
-
-// ============================================
-// Account
-// ============================================
-
-export async function getAccount(): Promise<unknown> {
-  return egisRequest(`${V1_URL}/account`);
 }
