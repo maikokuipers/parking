@@ -12,7 +12,13 @@ services:
       - DATABASE_PATH=/app/data/parkeerhulp.db
     volumes:
       - parkeerhulp-data:/app/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.parking.rule=Host(`parking.maikokuipers.nl`)"
+      - "traefik.http.routers.parking.entrypoints=https"
+      - "traefik.http.routers.parking.tls=true"
+      - "traefik.http.routers.parking.tls.certresolver=letsencrypt"
+      - "traefik.http.services.parking.loadbalancer.server.port=3000"
     restart: unless-stopped
-
 volumes:
   parkeerhulp-data:
