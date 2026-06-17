@@ -21,3 +21,15 @@ body {
 input[type="time"]::-webkit-calendar-picker-indicator {
   filter: invert(1);
 }
+
+/* Prevent iOS Safari time inputs from overflowing */
+input[type="time"] {
+  max-width: 100%;
+  box-sizing: border-box;
+  -webkit-appearance: none;
+}
+
+/* Tame iOS date/time inner elements */
+input[type="time"]::-webkit-date-and-time-value {
+  text-align: center;
+}
