@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import PlateSelector from "@/components/plate-selector";
 import TimeShortcuts, { resolveTime } from "@/components/time-shortcuts";
@@ -8,6 +8,14 @@ import TimePicker from "@/components/time-picker";
 import ParkingButton from "@/components/parking-button";
 import ActiveSession from "@/components/active-session";
 import type { FavoritePlate, TimeShortcut } from "@/lib/types";
+import {
+  registerServiceWorker,
+  requestNotificationPermission,
+  scheduleSessionNotification,
+  cancelSessionNotification,
+  syncSessionNotifications,
+  getNotificationPermission,
+} from "@/lib/notifications";
 
 interface ActiveSessionData {
   parking_session_id: number;
@@ -43,6 +51,20 @@ export default function HomePage() {
   const [zones, setZones] = useState<ZoneData[]>([]);
   const [selectedZoneId, setSelectedZoneId] = useState<number | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >("default");
+  const swReady = useRef(false);
+
+  // Register service worker
+  useEffect(() => {
+    registerServiceWorker().then((reg) => {
+      if (reg) {
+        swReady.current = true;
+        setNotificationPermission(getNotificationPermission());
+      }
+    });
+  }, []);
 
   // Load initial data
   useEffect(() => {
@@ -79,6 +101,17 @@ export default function HomePage() {
             s.status === "ACTIVE" || s.status === "STARTED"
         );
         setActiveSessions(active);
+
+        // Sync notification timers with active sessions
+        if (swReady.current && getNotificationPermission() === "granted") {
+          syncSessionNotifications(
+            active.map((s: ActiveSessionData) => ({
+              sessionId: s.parking_session_id,
+              vrn: s.vrn,
+              endTime: s.ended_at,
+            }))
+          );
+        }
       }
     } catch {
       // Silent fail for polling
@@ -154,6 +187,20 @@ export default function HomePage() {
 
       if (data.success) {
         setSuccess(`Parkeren gestart voor ${selectedPlate}`);
+
+        // Schedule notification 5 min before end
+        if (swReady.current) {
+          const granted = await requestNotificationPermission();
+          setNotificationPermission(granted ? "granted" : "denied");
+          if (granted && data.data?.parking_session_id) {
+            scheduleSessionNotification(
+              data.data.parking_session_id,
+              selectedPlate,
+              timeToIso(endTime)
+            );
+          }
+        }
+
         setSelectedPlate(null);
         setSelectedShortcutId(null);
         setStartTime("");
@@ -174,6 +221,9 @@ export default function HomePage() {
   // Stop session
   const handleStop = async (sessionId: number) => {
     try {
+      // Cancel notification timer immediately
+      cancelSessionNotification(sessionId);
+
       const now = new Date().toISOString();
       const res = await fetch(`/api/sessions/${sessionId}`, {
         method: "PATCH",
@@ -209,25 +259,66 @@ export default function HomePage() {
         {/* Header */}
         <div className="flex items-center justify-between mb-6 pt-2">
           <h1 className="text-xl font-bold">ParkeerHulp</h1>
-          <Link
-            href="/settings"
-            className="text-gray-400 hover:text-white transition-colors p-2"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+          <div className="flex items-center gap-2">
+            {/* Notification toggle */}
+            {notificationPermission !== "unsupported" && (
+              <button
+                onClick={async () => {
+                  const granted = await requestNotificationPermission();
+                  setNotificationPermission(granted ? "granted" : "denied");
+                }}
+                className={`p-2 transition-colors ${
+                  notificationPermission === "granted"
+                    ? "text-emerald-400"
+                    : "text-gray-500 hover:text-white"
+                }`}
+                title={
+                  notificationPermission === "granted"
+                    ? "Notificaties aan"
+                    : notificationPermission === "denied"
+                      ? "Notificaties geblokkeerd in browser-instellingen"
+                      : "Notificaties inschakelen"
+                }
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+                  <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+                  {notificationPermission !== "granted" && (
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                  )}
+                </svg>
+              </button>
+            )}
+            <Link
+              href="/settings"
+              className="text-gray-400 hover:text-white transition-colors p-2"
             >
-              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-              <circle cx="12" cy="12" r="3" />
-            </svg>
-          </Link>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            </Link>
+          </div>
         </div>
 
         {/* Active Sessions */}
